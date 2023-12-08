@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+import os
+# import subprocess
+import sys
+import subprocess
+
+from parse import parse_args
+
+
+args = sys.argv
+argc = len(sys.argv)
+
+port = ""
+origin = ""
+cdn_name = ""
+username = ""
+keyfile = ""
+replicas = ["45.33.99.146", "50.116.6.217", "139.162.142.68", "172.105.228.194", "172.105.166.74", "172.105.36.32"]
+dns_server = "173.255.237.185"
+
+port, origin, cdn_name, username, keyfile = parse_args(args, argc)
+
+for replica in replicas:
+    print("Stopping HTTP Server on replica {}".format(replica))
+    ssh_command = "ssh -i {} {}@{} pkill -f 'httpserver -p {}'".format(keyfile, username, replica, port)
+    print(ssh_command)
+    process = subprocess.Popen(ssh_command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    output = process.communicate()
+    print(output)
+    remove_command = "ssh -i {} {}@{} rm *".format(keyfile, username, replica, port, origin)
+    process = subprocess.Popen(remove_command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    output = process.communicate()
+    if output[1].decode().__contains__("exchange"):
+        print("Key exchange issue. Please retry. It should work after trying a couple of times")
+        exit(1)
+    #os.system(ssh_command)
+
+print("Stopping DNS Server on {}".format(dns_server))
+ssh_command = "ssh -i {} {}@{} pkill -f 'dnsserver -p {}'".format(keyfile, username, dns_server, port)
+print(ssh_command)
+process = subprocess.Popen(ssh_command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+output = process.communicate()
+remove_command = "ssh -i {} {}@{} rm *".format(keyfile, username, dns_server, port, cdn_name)
+process = subprocess.Popen(remove_command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+output = process.communicate()
+print(output)
+if output[1].decode().__contains__("exchange"):
+    print("Key exchange issue. Please retry. It should work after trying a couple of times")
+    exit(1)
+#os.system(ssh_command)
+

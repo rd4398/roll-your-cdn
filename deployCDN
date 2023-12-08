@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+import os
+import sys
+import time
+import subprocess
+
+from parse import parse_args
+
+
+args = sys.argv
+argc = len(sys.argv)
+
+port = ""
+origin = ""
+cdn_name = ""
+username = ""
+keyfile = ""
+replicas = ["45.33.99.146", "50.116.6.217", "139.162.142.68", "172.105.228.194", "172.105.166.74", "172.105.36.32"]
+dns_server = "173.255.237.185"
+
+port, origin, cdn_name, username, keyfile = parse_args(args, argc)
+print(port, origin, cdn_name, username, keyfile)
+
+for replica in replicas:
+    print("Deploying HTTP Server on replica {}".format(replica))
+    scp_command = "scp -i {} httpserver {}@{}:".format(keyfile, username, replica)
+    process = subprocess.Popen(scp_command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    output = process.communicate()
+    print(output, flush=True)
+    if output[1].decode().__contains__("exchange"):
+        print("Key exchange issue. Please retry. It should work after trying a couple of times", flush=True)
+        exit(1)
+
+    ssh_command = "ssh -i {} {}@{} chmod +x httpserver".format(keyfile, username, replica)
+    print(ssh_command)
+    process = subprocess.Popen(ssh_command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    output = process.communicate()
+    print(output, flush=True)
+    if output[1].decode().__contains__("exchange"):
+        print("Key exchange issue. Please retry. It should work after trying a couple of times", flush=True)
+        exit(1)
+
+print("Deploying DNS Server on {}".format(dns_server))
+scp_command = "scp -i {} dnsserver {}@{}:".format(keyfile, username, dns_server)
+process = subprocess.Popen(scp_command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+output = process.communicate()
+print(output, flush=True)
+if output[1].decode().__contains__("exchange"):
+    print("Key exchange issue. Please retry. It should work after trying a couple of times", flush=True)
+    exit(1)
+ssh_command = "ssh -i {} {}@{} chmod +x dnsserver".format(keyfile, username, dns_server)
+process = subprocess.Popen(ssh_command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+print(ssh_command, flush=True)
+output = process.communicate()
+print(output, flush=True)
+if output[1].decode().__contains__("exchange"):
+    print("Key exchange issue. Please retry. It should work after trying a couple of time", flush=True)
+    exit(1)

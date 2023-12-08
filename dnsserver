@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+import math
+from os import sendfile
+import sys
+import socket as sock
+import json
+import urllib.request
+
+
+print("Running in DNS server", flush=True)
+args = sys.argv
+argc = len(args)
+port_num = ""
+cdn_name = ""
+host_ip = ""
+http_ver = "HTTP/1.1"
+replicas = ["45.33.99.146", "50.116.6.217", "139.162.142.68", "172.105.228.194", "172.105.166.74", "172.105.36.32"]
+replica_locations = {}
+client_locations = {}
+
+
+def free_geo_ip_api(ip):
+    url = "https://api.freegeoip.app/json/{}?apikey=7abbc3c0-5aef-11ec-80b8-cdb20715206a".format(ip)
+    print("FREE GEO", url)
+    try:
+        response = urllib.request.urlopen(url)
+        api_result_json = response.read().decode()
+        api_result_dict = json.loads(api_result_json)
+        latitude = api_result_dict["latitude"]
+        longitude = api_result_dict["longitude"]
+    except:
+        return []
+
+    return [latitude, longitude]
+
+
+def cache_locations_of_replicas():
+    for replica in replicas:
+        replica_locations[replica] = free_geo_ip_api(replica)
+
+
+def parse_args():
+    port = ""
+    name = ""
+    for i in range(0, argc-1):
+        if args[i] == "-p":
+            port = args[i+1]
+        elif args[i] == '-n':
+            name = args[i+1]
+
+    if port == "" or name == "":
+        print("Usage: ./dnsserver - p < port > -n < name >", flush=True)
+        exit(1)
+    return port, name
+
+
+
+def get_flags(flags):
+
+    flags_byte1 = flags[:1]
+
+    QR = '1'
+
+    OPCODE = ''
+
+    for bit in range(1, 5):
+        OPCODE += str(ord(flags_byte1) & (1 << bit))
+
+    AA = '1'
+    TC = '0'
+    RD = '0'
+    RA = '0'
+    Z = '000'
+    RCODE = '0000'
+
+    return int(QR+OPCODE+AA+TC+RD, 2).to_bytes(1, byteorder='big') + int(RA+Z+RCODE).to_bytes(1, byteorder='big')
+
+
+def get_domain_question(data):
+    domain_str = ""
+    domain_list = []
+    find_length = 0
+    length = 0
+    count = 0
+    question_index = 0
+    for byte in data:
+        if find_length == 1:
+            if byte != 0:
+                domain_str += chr(byte)
+            count += 1
+            if count == length:
+                domain_list.append(domain_str)
+                domain_str = ""
+                find_length = 0
+                count = 0
+            if byte == 0:
+                domain_list.append(domain_str)
+                break
+        else:
+            find_length = 1
+            length = byte
+        question_index += 1
+
+    question_type = data[question_index: question_index + 2]
+
+    return domain_list, question_type
+
+
+def parse_dns_request(req):
+    # Transaction ID
+    t_id = req[:2]
+
+    # Flags
+    flags = get_flags(req[2:4])
+
+    domain, q_type = get_domain_question(req[12:])
+
+    return t_id, domain, q_type, flags
+
+
+def create_socket():
+    client_socket = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+    client_socket.settimeout(10)
+    client_socket.connect()
+    return client_socket
+
+
+# Tried implementing using RTT but ping to a lot of my clients like my laptop is not working.
+#def find_best_replica(name, client_ip):
+#    print("I'm in find best replica")
+#    best_replica = ""
+#    if name.__contains__(cdn_name):
+#        print("Should be here too CDN NAME")
+#        min_rtt = 1000000
+#        for replica in replicas:
+#            s = create_socket()
+#            print("**", s)
+#            message = "GET RTT {} \r\n".format(client_ip)
+#            s.sendall(message)
+#            print("Sending this message to replicas ", message)
+#            response = s.recv(1024)
+#            response = response.decode()
+#            print("Received response from replica ", response)
+#            rtt = response.split("\n")[-1]
+#            rtt = int(rtt)
+#            print("RTT ", rtt)
+#            if (rtt < min_rtt):
+#                min_rtt = rtt
+#                best_replica = replica
+#            s.close()
+#    print("best replica ", best_replica)
+#    return best_replica
+  
+
+def build_question(domain, q_type):
+    q_bytes = b''
+
+    for item in domain:
+        q_bytes += bytes([len(item)])
+
+        for char in item:
+            q_bytes += ord(char).to_bytes(1, byteorder='big')
+
+    if q_type == 'a':
+        q_bytes += (1).to_bytes(2, byteorder='big')
+
+    q_bytes += (1).to_bytes(2, byteorder='big')
+
+    return q_bytes
+
+
+def build_record(domain, q_type, ttl, ip):
+    r_bytes = b'\xc0\x0c'
+
+    if q_type == 'a':
+        r_bytes += (0).to_bytes(1, byteorder='big') + (1).to_bytes(1, byteorder='big')
+
+    r_bytes += (0).to_bytes(1, byteorder='big') + (1).to_bytes(1, byteorder='big')
+
+    r_bytes += int(ttl).to_bytes(4, byteorder='big')
+
+    if q_type == 'a':
+        r_bytes = r_bytes + (0).to_bytes(1, byteorder='big') + (4).to_bytes(1, byteorder='big')
+
+        for part in ip.split('.'):
+            r_bytes += (int(part)).to_bytes(1,byteorder='big')
+
+    return r_bytes
+
+
+def make_dns_reply(t_id, flags, domain, ip):
+    reply = B""
+    # Question Count
+    QDCOUNT = b'\x00\x01'
+    # Nameserver Count
+    NSCOUNT = (0).to_bytes(2, byteorder='big')
+    # Additonal Count
+    ARCOUNT = (0).to_bytes(2, byteorder='big')
+    # Answer Count
+    ANCOUNT = b'\x00\x01'
+    # Question type
+    q_type = 'a'
+    ttl = '400'
+    # HEADER
+    reply = t_id + flags + QDCOUNT + ANCOUNT + NSCOUNT + ARCOUNT
+
+    # DNS QUESTION
+    reply += build_question(domain, q_type)
+
+    # Adding body to the reply
+    reply += build_record(domain, q_type, ttl, ip)
+
+    return reply
+
+
+# SOURCE: https://gist.github.com/rochacbruno/2883505
+def distance(location1, location2):
+    latitude1, longitude1 = location1
+    latitude2, longitude2 = location2
+    radius = 6371 # km
+
+    lat_diff = math.radians(latitude2-latitude1)
+    lon_diff = math.radians(longitude2-longitude1)
+    a = math.sin(lat_diff/2) * math.sin(lat_diff/2) + math.cos(math.radians(latitude1)) \
+        * math.cos(math.radians(latitude2)) * math.sin(lon_diff/2) * math.sin(lon_diff/2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    d = radius * c
+    return d
+
+
+def find_best_replica(name, client_ip):
+    min_distance = 1000000
+    replica_closest = ""
+    if not name.__contains__(cdn_name):
+        return ""
+    if client_ip not in client_locations.keys():
+        client_locations[client_ip] = free_geo_ip_api(client_ip)
+
+    for replica in replicas:
+        dist = distance(client_locations[client_ip], replica_locations[replica])
+        if dist < min_distance:
+            min_distance = dist
+            replica_closest = replica
+    return replica_closest
+
+
+# SOURCE: https://github.com/howCodeORG/howDNS/blob/master/dns.py
+# Watched all the videos on Youtube by HowCode about the same
+def run_dns_server():
+    cache_locations_of_replicas()
+    dns_sock = sock.socket(sock.AF_INET, sock.SOCK_DGRAM)
+    print("DNS Socket: ", dns_sock, flush=True)
+    dns_sock.setsockopt(sock.SOL_SOCKET, sock.SO_REUSEADDR, 1)
+    dns_sock.bind((host_ip, int(port_num)))
+
+    while True:
+        request, client_ip = dns_sock.recvfrom(1024)
+        print("DNS request accepted from ", client_ip, "Request", request, flush=True)
+        transaction_id, name_to_resolve, question_type, response_flags = parse_dns_request(request)
+        name_str = '.'.join(name_to_resolve)
+        if question_type != b'\x00\x01':
+            print("Invalid question type", flush=True)
+            continue
+        replica_ip = find_best_replica(name_str, client_ip[0])
+        if replica_ip == "":
+            print("No IP found", flush=True)
+            continue
+        response = make_dns_reply(transaction_id, response_flags, name_to_resolve, replica_ip)
+        print("DNS response prepared: ", response, flush=True)
+        dns_sock.sendto(response, client_ip)
+
+    dns_sock.close()
+
+
+port_num, cdn_name = parse_args()
+host_ip = ""
+print("DNS server: ", host_ip, flush=True)
+run_dns_server()

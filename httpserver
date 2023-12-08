@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+import os
+import socket as sock
+import sys
+import urllib.request
+import subprocess
+
+print("Running HTTP server", flush=True)
+args = sys.argv
+argc = len(args)
+port_num = ""
+origin_server = ""
+host_ip = ""
+http_ver = "HTTP/1.1"
+origin_socket = sock.socket(sock.AF_INET, sock.SOCK_DGRAM)
+origin_port = 8080
+dns_ip = "173.255.237.185"
+cache_file_frequency_map = {}
+max_disk_usage = 18.5 * 1000000
+disk_size_used = sum(os.path.getsize(f) for f in os.listdir('.') if os.path.isfile(f))
+
+def parse_args():
+    port = ""
+    origin = ""
+    for i in range(0, argc-1):
+        if args[i] == "-p":
+            port = args[i+1]
+        elif args[i] == '-o':
+            origin = args[i+1]
+
+    if port == "" or origin == "":
+        print("Usage: ./httpserver - p < port > -o < origin >", flush=True)
+        exit(1)
+    return port, origin
+
+
+def get_host_ip():
+   origin_socket.connect((origin_server, int(origin_port)))
+   host = origin_socket.getsockname()[0]
+   origin_socket.shutdown(sock.SHUT_RDWR)
+   origin_socket.close()
+   return host
+
+
+def file_in_cache(file):
+    try:
+        f = open("cache{}".format(file), "r")
+        return f.read()
+    except:
+        return ""
+
+
+def get_from_origin(file):
+    url = "http://{}:{}".format(origin_server, origin_port) + file
+    try:
+        response = urllib.request.urlopen(url)
+        return response.read().decode()
+    except:
+        return ""
+
+
+def remove_file_from_disk(file_path):
+    cache_file_frequency_map.pop(file_path)
+    os.remove("cache{}".format(file_path))
+
+
+def remove_least_frequent_entry(data, file):
+    global disk_size_used
+    file_path = min(cache_file_frequency_map, key=cache_file_frequency_map.get)
+    disk_size_used -= os.path.getsize("cache{}".format(file_path))
+    remove_file_from_disk(file_path)
+    add_to_cache(data, file)
+
+
+def add_to_cache(data, file):
+    global disk_size_used
+    if disk_size_used < max_disk_usage:
+        try:
+            f = open("cache{}".format(file), "w+")
+            f.write(data)
+            disk_size_used += os.path.getsize("cache{}".format(file))
+        except EnvironmentError:
+            print("Inside Exception")
+            remove_least_frequent_entry(data, file)
+    else:
+        print("Not enough space in disk")
+        remove_least_frequent_entry(data, file)
+
+
+# Tried implementing rtt calculation but failed to do so because ping doesn't work on a lot of clients like my laptop.
+# def calculate_rtt_of_client(ip_to_ping):
+#    scamper_command = "scamper -i {} -c 'ping -c 1'".format(ip_to_ping)
+#    process = subprocess.Popen(scamper_command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+#    out, err = process.communicate()
+#    print("Scamper communicate thing ", out)
+#    print("Scamper error thing ", err)
+#    rtt = out.split("/")[4]
+#    return rtt
+
+
+def run_http_server():
+    serv_sock = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+    print("HTTP server ", serv_sock, flush=True)
+    serv_sock.setsockopt(sock.SOL_SOCKET, sock.SO_REUSEADDR, 1)
+    serv_sock.bind((host_ip, int(port_num)))
+    serv_sock.listen(1)
+
+    while True:
+        conn, client_ip = serv_sock.accept()
+        print("CLIENT IP :",client_ip)
+        request = conn.recv(4096).decode()
+        print(request)
+        request_split = request.split("\n")
+        file_path = ""
+        ip_to_ping = ""
+        for line in request_split:
+            if line.__contains__("GET"):
+                line_split = line.split()
+                file_path = line_split[1]
+                break
+        print("File path: ", file_path, flush=True)
+        origin_response = ""
+        if file_path == "":
+            print("Empty GET request", flush=True)
+            conn.close()
+            continue
+        elif file_path == "/grading/beacon":
+            server_response = 'HTTP/1.1 204 No Content\r\nContent-Type: text/html\r\n\r\n'
+            conn.sendall(server_response.encode())
+            conn.close()
+            continue
+
+        file_path_2 = "/"+file_path[1:].replace("/", '_')
+
+        origin_response = file_in_cache(file_path_2[1:])
+
+        in_cache = True
+        if origin_response == "":
+            origin_response = get_from_origin(file_path)
+            in_cache = False
+            print("Not found in Cache", flush=True)
+
+        if origin_response == "":
+            server_response = 'HTTP/1.1 404 NOT FOUND\r\nContent-Type: text/html\r\n\r\n File Not Found'
+            conn.sendall(server_response.encode())
+            conn.close()
+            continue
+        
+        server_response = 'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n' + origin_response
+
+        conn.sendall(server_response.encode())
+        conn.close()
+
+
+        if not in_cache:
+            add_to_cache(origin_response, file_path_2[1:])
+            cache_file_frequency_map[file_path_2[1:]] = 1
+        else:
+            cache_file_frequency_map[file_path_2[1:]] += 1
+        
+
+
+    serv_sock.close()
+
+
+port_num, origin_server = parse_args()
+host_ip = ""
+host_ip = get_host_ip()
+print("HTTP server: ", host_ip, flush=True)
+run_http_server()

@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+import os
+import sys
+import subprocess
+
+from parse import parse_args
+
+print("Running CDN", flush=True)
+args = sys.argv
+argc = len(sys.argv)
+
+port = ""
+origin = ""
+cdn_name = ""
+username = ""
+keyfile = ""
+replicas = ["45.33.99.146", "50.116.6.217", "139.162.142.68", "172.105.228.194", "172.105.166.74", "172.105.36.32"]
+dns_server = "173.255.237.185"
+
+port, origin, cdn_name, username, keyfile = parse_args(args, argc)
+
+for replica in replicas:
+    print("Running HTTP Server on replica {}".format(replica), flush=True)
+    ssh_command = "ssh -i {} {}@{} nohup ./httpserver -p {} -o {} 2>&1 &>out.file &".format(
+        keyfile, username, replica, port, origin)
+    print(ssh_command, flush=True)
+    print(ssh_command.split(), flush=True)
+    process = subprocess.Popen(ssh_command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    output = process.communicate()
+    print(output)
+    if output[1].decode().__contains__("exchange"):
+        print("Key exchange issue. Please retry. It should work after trying a couple of times", flush=True)
+        exit(1)
+    
+
+print("Running DNS Server on {}".format(dns_server), flush=True)
+ssh_command = "ssh -i {} {}@{} nohup ./dnsserver -p {} -n {} 2>&1 &>out.file &".format(
+    keyfile, username, dns_server, port, cdn_name)
+print(ssh_command, flush=True)
+print(ssh_command.split(), flush=True)
+process = subprocess.Popen(ssh_command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+output = process.communicate()
+print(output, flush=True)
+if output[1].decode().__contains__("exchange"):
+    print("Key exchange issue. Please retry. It should work after trying a couple of times", flush=True)
+    exit(1)
+
+
+
+
+
+
+
+
+
+
+
+
